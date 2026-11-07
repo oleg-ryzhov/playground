@@ -1,0 +1,562 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Geometry Dash Web Clone</title>
+    <style>
+        body {
+            background-color: #050505;
+            color: #fff;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+            overflow: hidden;
+            user-select: none;
+        }
+        #gameContainer {
+            position: relative;
+            box-shadow: 0 0 30px rgba(0, 180, 255, 0.3);
+            border-radius: 4px;
+            overflow: hidden;
+        }
+        canvas {
+            display: block;
+            background: linear-gradient(to bottom, #1a0033, #001133);
+        }
+        #uiOverlay {
+            position: absolute;
+            top: 15px;
+            left: 0;
+            width: 100%;
+            display: flex;
+            justify-content: space-between;
+            padding: 0 20px;
+            box-sizing: border-box;
+            font-size: 20px;
+            font-weight: bold;
+            text-shadow: 2px 2px 4px #000;
+            pointer-events: none;
+        }
+        #instructions {
+            margin-top: 15px;
+            font-size: 14px;
+            color: #aaa;
+            text-align: center;
+            max-width: 600px;
+            line-height: 1.5;
+        }
+        .highlight {
+            color: #00ffff;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="gameContainer">
+        <div id="uiOverlay">
+            <div id="modeDisplay">MODE: CUBE</div>
+            <div id="progressDisplay">PROGRESS: 0%</div>
+            <div id="attemptDisplay">ATTEMPT: 1</div>
+        </div>
+        <canvas id="gameCanvas" width="900" height="500"></canvas>
+    </div>
+
+    <div id="instructions">
+        Press <span class="highlight">SPACEBAR</span>, <span class="highlight">UP ARROW</span>, or <span class="highlight">LEFT CLICK</span> to Jump / Fly / Flip Gravity.<br>
+        Hit active <span class="highlight">Orbs</span> mid-air by pressing the action key right as you pass through them!
+    </div>
+
+    <script>
+        const canvas = document.getElementById("gameCanvas");
+        const ctx = canvas.getContext("2d");
+
+        // Game Configuration & Constants
+        const GRAVITY = 1.4;
+        const JUMP_FORCE = -15;
+        const SHIP_THRUST = -0.8;
+        const HORIZONTAL_SPEED = 7.5;
+        const LEVEL_WIDTH = 13500; 
+
+        // Game State Object
+        let game = {
+            attempt: 1,
+            progress: 0,
+            active: true,
+            victory: false,
+            cameraX: 0,
+            inputPressed: false,
+            inputJustPressed: false
+        };
+
+        // Player Entity Structure
+        let player = {
+            x: 100,
+            y: 300,
+            width: 34,
+            height: 34,
+            vy: 0,
+            gravitySign: 1, // 1 = Normal, -1 = Inverted
+            mode: 'CUBE',   // CUBE, SHIP, BALL
+            rotation: 0,
+            onGround: false,
+            isDashing: false,
+            dashTimer: 0,
+            trail: []
+        };
+
+        // Environment Map Definitions
+        let levelObjects = [];
+
+        function buildLevel() {
+            levelObjects = [];
+
+            // Base ground platforms
+            addBlockRow(0, 2500, 450);
+            addBlockRow(2900, 5200, 450);
+            addBlockRow(5600, 9000, 450);
+            addBlockRow(9300, LEVEL_WIDTH, 450);
+
+            // --- SECTOR 1: CUBE INTRO ---
+            addBlock(400, 416); addSpike(550, 416);
+            addBlock(700, 416); addBlock(734, 416); addSpike(717, 382);
+            
+            // Jump Orb & Jump Pad Intro
+            addJumpOrb(1000, 320);
+            addSpike(1000, 416); addSpike(1034, 416);
+            addBlock(1200, 416); addJumpPad(1205, 396);
+            addBlock(1400, 320); addBlock(1434, 320);
+
+            // Gravity Pad & Gravity Orb Segment
+            addGravityPad(1700, 430);
+            addBlockRow(1800, 2300, 80); // Ceiling runway
+            addGravityOrb(2000, 180);   // Activates while upside down
+            addSpike(2150, 114, true);  // Hanging spike
+            addGravityPad(2400, 60, true); // Returns player to floor
+
+            // --- TRANSITION 1: SHIP MODE ---
+            addPortal(2700, 250, 'PORTAL_SHIP');
+
+            // Ship Obstacles (Cavern fly-through)
+            addBlockRow(2900, 4200, 80); // Ceiling constraints
+            addSpike(3100, 416);
+            addSpike(3300, 114, true);
+            addBlock(3500, 300); addBlock(3500, 266); // Mid pillar
+            addSpike(3700, 416); addSpike(3900, 114, true);
+            
+            // Orbs inside Ship segment
+            addJumpOrb(4100, 250);
+            addDashOrb(4400, 250);
+
+            // --- TRANSITION 2: BALL MODE ---
+            addPortal(5000, 250, 'PORTAL_BALL');
+            
+            // Ball Grid Layout (Requires timed gravity shifts)
+            addBlockRow(5600, 6200, 120);
+            addSpike(5800, 416);
+            addSpike(6000, 154, true);
+            
+            // Precision steps for Ball
+            addBlock(6400, 350); addBlock(6600, 180);
+            addBlock(6800, 350); addBlock(7000, 180);
+            
+            // Green Orb Implementation
+            addGreenOrb(7300, 270);
+            addGreenOrb(7600, 270);
+            
+            // Mixed mechanics section
+            addBlockRow(7900, 9000, 100);
+            addGravityPad(8100, 430);
+            addSpike(8300, 134, true);
+            addJumpOrb(8600, 200);
+
+            // --- TRANSITION 3: APEX CLIMB (CUBE RE-ENTRY) ---
+            addPortal(9100, 250, 'PORTAL_CUBE');
+
+            // Dash maze & final synchronization checks
+            addDashOrb(9500, 350);
+            addSpikeRow(9600, 9900, 416); // Must dash completely over this gap
+            
+            addBlock(10200, 416); addJumpPad(10205, 396);
+            addBlock(10500, 250); addGravityPad(10505, 230);
+            addBlockRow(10700, 11500, 100); // Inverse run
+            addGreenOrb(11000, 180);
+            addGravityOrb(11300, 180);
+            
+            // Final High-Speed Staircase
+            addBlock(11900, 416);
+            addBlock(12100, 350);
+            addBlock(12300, 280);
+            addBlock(12500, 210);
+            addSpike(12500, 176);
+
+            // End Goal
+            addPortal(13100, 300, 'FINISH');
+        }
+
+        // Environment Construction Helpers
+        function addBlock(x, y) { levelObjects.push({ type: 'B', x, y, w: 34, h: 34 }); }
+        function addBlockRow(startX, endX, y) {
+            for (let x = startX; x < endX; x += 34) {
+                levelObjects.push({ type: 'B', x, y, w: 34, h: 34 });
+            }
+        }
+        function addSpike(x, y, inverted = false) { levelObjects.push({ type: 'S', x, y, w: 30, h: 34, inverted }); }
+        function addSpikeRow(startX, endX, y) {
+            for (let x = startX; x < endX; x += 30) {
+                levelObjects.push({ type: 'S', x, y, w: 30, h: 34, inverted: false });
+            }
+        }
+        function addJumpPad(x, y, inverted = false) { levelObjects.push({ type: 'JP', x, y, w: 24, h: 10, inverted, used: false }); }
+        function addGravityPad(x, y, inverted = false) { levelObjects.push({ type: 'GP', x, y, w: 24, h: 10, inverted, used: false }); }
+        function addJumpOrb(x, y) { levelObjects.push({ type: 'JO', x, y, r: 16, used: false }); }
+        function addGravityOrb(x, y) { levelObjects.push({ type: 'GO', x, y, r: 16, used: false }); }
+        function addGreenOrb(x, y) { levelObjects.push({ type: 'GRN', x, y, r: 16, used: false }); }
+        function addDashOrb(x, y) { levelObjects.push({ type: 'DO', x, y, r: 16, used: false }); }
+        function addPortal(x, y, type) { levelObjects.push({ type, x, y, w: 40, h: 90 }); }
+
+        // User Input Handling Engine
+        function handleActionStart() {
+            if (!game.active) {
+                if (game.victory) resetGame(true);
+                return;
+            }
+            if (!game.inputPressed) {
+                game.inputJustPressed = true;
+            }
+            game.inputPressed = true;
+        }
+
+        function handleActionEnd() {
+            game.inputPressed = false;
+        }
+
+        window.addEventListener("keydown", e => { if (e.key === " " || e.key === "ArrowUp") { handleActionStart(); e.preventDefault(); } });
+        window.addEventListener("keyup", e => { if (e.key === " " || e.key === "ArrowUp") handleActionEnd(); });
+        canvas.addEventListener("mousedown", e => { if (e.button === 0) handleActionStart(); });
+        canvas.addEventListener("mouseup", e => { if (e.button === 0) handleActionEnd(); });
+        canvas.addEventListener("touchstart", e => { handleActionStart(); e.preventDefault(); }, { passive: false });
+        canvas.addEventListener("touchend", e => { handleActionEnd(); });
+
+        // Circular Box Collision Verification Utility
+        function checkOrbCollision(px, py, pw, ph, ox, oy, or) {
+            let closestX = Math.max(px, Math.min(ox, px + pw));
+            let closestY = Math.max(py, Math.min(oy, py + ph));
+            let distanceX = ox - closestX;
+            let distanceY = oy - closestY;
+            return (distanceX * distanceX + distanceY * distanceY) < (or * or);
+        }
+
+        // AABB Box Collision Check Logic
+        function checkRectCollision(r1, r2) {
+            return r1.x < r2.x + r2.w && r1.x + r1.w > r2.x && r1.y < r2.y + r2.h && r1.y + r1.h > r2.y;
+        }
+
+        // Trigger Failure State Sequence
+        function triggerDeath() {
+            game.active = false;
+            setTimeout(() => {
+                game.attempt++;
+                resetGame(false);
+            }, 600);
+        }
+
+        // Game Variable Initialization
+      function resetGame(fullReset) {
+if (fullReset) {
+game.attempt = 1;
+game.victory = false;
+}
+player.x = 100;
+player.y = 300;
+player.vy = 0;
+player.gravitySign = 1;
+player.mode = 'CUBE';
+player.rotation = 0;
+player.onGround = false;
+player.isDashing = false;
+player.dashTimer = 0;
+player.trail = [];
+game.cameraX = 0;
+game.active = true;
+buildLevel();
+}
+// Physics Calculation Engine Loop
+function update() {
+if (!game.active) return;
+// Compute Game Progression Metrics
+game.progress = Math.min(Math.floor((player.x / (LEVEL_WIDTH - 600)) * 100), 100);
+document.getElementById("progressDisplay").innerText = PROGRESS: ${game.progress}%;
+document.getElementById("attemptDisplay").innerText = ATTEMPT: ${game.attempt};
+document.getElementById("modeDisplay").innerText = MODE: ${player.mode};
+// Process Active Speed Modification States
+let currentSpeed = HORIZONTAL_SPEED;
+if (player.isDashing) {
+currentSpeed *= 2.2;
+player.dashTimer--;
+player.vy = 0; // Lock gravity drift during active dash sequences
+if (player.dashTimer <= 0) player.isDashing = false;
+}
+player.x += currentSpeed;
+// Append Vector Positions to Motion Trail Array
+player.trail.push({ x: player.x, y: player.y, mode: player.mode });
+if (player.trail.length > 18) player.trail.shift();
+// Compute Physics Vectors Based on Mode State
+if (!player.isDashing) {
+if (player.mode === 'SHIP') {
+if (game.inputPressed) {
+player.vy += SHIP_THRUST * player.gravitySign;
+} else {
+player.vy += 0.5 * player.gravitySign;
+}
+if (player.vy > 7) player.vy = 7;
+if (player.vy < -7) player.vy = -7;
+} else {
+player.vy += GRAVITY * player.gravitySign;
+if (Math.abs(player.vy) > 18) player.vy = 18 * Math.sign(player.vy);
+}
+}
+player.y += player.vy;
+player.onGround = false;
+// Window Boundary Safety Limits
+if (player.y > canvas.height || player.y < -50) {
+triggerDeath();
+return;
+}
+// Standardize Rotation Matrix Across Active States
+if (player.mode === 'CUBE') {
+if (player.onGround) {
+let targetRot = Math.round(player.rotation / (Math.PI / 2)) * (Math.PI / 2);
+player.rotation += (targetRot - player.rotation) * 0.3;
+} else {
+player.rotation += 0.09 * player.gravitySign;
+}
+} else if (player.mode === 'SHIP') {
+player.rotation = player.vy * 0.05 * player.gravitySign;
+} else if (player.mode === 'BALL') {
+player.rotation += 0.06 * player.gravitySign;
+}
+// Spatial Collision Grid Checks
+let playerBox = { x: player.x, y: player.y, w: player.width, h: player.height };
+for (let obj of levelObjects) {
+if (Math.abs(obj.x - player.x) > 1000) continue;
+if (obj.type === 'B') {
+if (checkRectCollision(playerBox, obj)) {
+let overlapX = Math.min(player.x + player.width, obj.x + obj.w) - Math.max(player.x, obj.x);
+let overlapY = Math.min(player.y + player.height, obj.y + obj.h) - Math.max(player.y, obj.y);
+if (overlapX > overlapY) {
+if (player.vy * player.gravitySign >= 0) {
+if (player.gravitySign === 1) {
+player.y = obj.y - player.height;
+} else {
+player.y = obj.y + obj.h;
+}
+player.vy = 0;
+player.onGround = true;
+} else {
+triggerDeath();
+return;
+}
+} else {
+triggerDeath();
+return;
+}
+}
+} else if (obj.type === 'S') {
+let spikeHitbox = { x: obj.x + 6, y: obj.inverted ? obj.y : obj.y + 4, w: obj.w - 12, h: obj.h - 4 };
+if (checkRectCollision(playerBox, spikeHitbox)) {
+triggerDeath();
+return;
+}
+} else if (obj.type === 'JP' && !obj.used) {
+if (checkRectCollision(playerBox, obj)) {
+player.vy = obj.inverted ? 14 : -14;
+obj.used = true;
+}
+} else if (obj.type === 'GP' && !obj.used) {
+if (checkRectCollision(playerBox, obj)) {
+player.gravitySign = obj.inverted ? 1 : -1;
+player.vy = player.gravitySign * -5;
+obj.used = true;
+}
+} else if (obj.type === 'JO' || obj.type === 'GO' || obj.type === 'GRN' || obj.type === 'DO') {
+if (!obj.used && game.inputJustPressed) {
+if (checkOrbCollision(player.x, player.y, player.width, player.height, obj.x, obj.y, obj.r)) {
+obj.used = true;
+game.inputJustPressed = false;
+if (obj.type === 'JO') {
+player.vy = player.gravitySign * JUMP_FORCE;
+} else if (obj.type === 'GO') {
+player.gravitySign *= -1;
+player.vy = player.gravitySign * -8;
+} else if (obj.type === 'GRN') {
+player.gravitySign *= -1;
+player.vy = player.gravitySign * JUMP_FORCE;
+} else if (obj.type === 'DO') {
+player.isDashing = true;
+player.dashTimer = 22;
+}
+}
+}
+} else if (obj.type.startsWith('PORTAL_')) {
+if (checkRectCollision(playerBox, obj)) {
+let nextMode = obj.type.split('_')[1];
+if (player.mode !== nextMode) {
+player.mode = nextMode;
+if (player.mode === 'SHIP') player.gravitySign = 1;
+}
+}
+} else if (obj.type === 'FINISH') {
+if (checkRectCollision(playerBox, obj)) {
+game.victory = true;
+game.active = false;
+setTimeout(() => alert("Level Complete! You mastered the geometry."), 50);
+}
+}
+}
+if (game.inputJustPressed) {
+if (player.onGround && player.mode === 'CUBE') {
+player.vy = player.gravitySign * JUMP_FORCE;
+player.onGround = false;
+} else if (player.mode === 'BALL') {
+player.gravitySign *= -1;
+player.onGround = false;
+player.vy = player.gravitySign * 2;
+}
+game.inputJustPressed = false;
+}
+game.cameraX = player.x - 150;
+}
+// Render Graphics Engine Viewport Loop
+function draw() {
+ctx.clearRect(0, 0, canvas.width, canvas.height);
+ctx.save();
+ctx.translate(-game.cameraX, 0);
+// Draw Floor Boundaries
+ctx.fillStyle = "#0c0022";
+ctx.fillRect(game.cameraX, 450, canvas.width, 50);
+ctx.strokeStyle = "#00ffff";
+ctx.lineWidth = 3;
+ctx.beginPath();
+ctx.moveTo(game.cameraX, 450);
+ctx.lineTo(game.cameraX + canvas.width, 450);
+ctx.stroke();
+// Draw Dynamic Player Trail Effects
+for (let i = 0; i < player.trail.length; i++) {
+let pt = player.trail[i];
+let alpha = (i / player.trail.length) * 0.35;
+ctx.fillStyle = rgba(0, 255, 255, ${alpha});
+ctx.fillRect(pt.x + (player.width-24)/2, pt.y + (player.height-24)/2, 24, 24);
+}
+// Draw Map Entities Matrix Loop
+for (let obj of levelObjects) {
+if (obj.x + 200 < game.cameraX || obj.x - 1000 > game.cameraX) continue;
+if (obj.type === 'B') {
+ctx.fillStyle = "#330066";
+ctx.strokeStyle = "#8800ff";
+ctx.lineWidth = 2;
+ctx.fillRect(obj.x, obj.y, obj.w, obj.h);
+ctx.strokeRect(obj.x, obj.y, obj.w, obj.h);
+} else if (obj.type === 'S') {
+ctx.fillStyle = obj.inverted ? "#ff3333" : "#cc0000";
+ctx.strokeStyle = "#ffffff";
+ctx.lineWidth = 1.5;
+ctx.beginPath();
+if (obj.inverted) {
+ctx.moveTo(obj.x, obj.y);
+ctx.lineTo(obj.x + obj.w, obj.y);
+ctx.lineTo(obj.x + obj.w / 2, obj.y + obj.h);
+} else {
+ctx.moveTo(obj.x + obj.w / 2, obj.y);
+ctx.lineTo(obj.x, obj.y + obj.h);
+ctx.lineTo(obj.x + obj.w, obj.y + obj.h);
+}
+ctx.closePath();
+ctx.fill();
+ctx.stroke();
+} else if (obj.type === 'JP' || obj.type === 'GP') {
+ctx.fillStyle = obj.type === 'JP' ? "#ffcc00" : "#ff00ff";
+ctx.fillRect(obj.x, obj.y, obj.w, obj.h);
+} else if (obj.type === 'JO' || obj.type === 'GO' || obj.type === 'GRN' || obj.type === 'DO') {
+ctx.beginPath();
+ctx.arc(obj.x, obj.y, obj.r, 0, Math.PI * 2);
+if (obj.type === 'JO') ctx.fillStyle = "rgba(255, 200, 0, 0.8)";
+else if (obj.type === 'GO') ctx.fillStyle = "rgba(255, 0, 255, 0.8)";
+else if (obj.type === 'GRN') ctx.fillStyle = "rgba(0, 255, 100, 0.8)";
+else if (obj.type === 'DO') ctx.fillStyle = "rgba(255, 80, 150, 0.8)";
+ctx.fill();
+ctx.strokeStyle = "#ffffff";
+ctx.lineWidth = obj.used ? 1 : 2.5;
+ctx.stroke();
+} else if (obj.type.startsWith('PORTAL_')) {
+let pColor = "#ff5500";
+if (obj.type.endsWith('SHIP')) pColor = "#00aaff";
+if (obj.type.endsWith('BALL')) pColor = "#ff00ff";
+ctx.fillStyle = pColor;
+ctx.globalAlpha = 0.7;
+ctx.fillRect(obj.x, obj.y, obj.w, obj.h);
+ctx.globalAlpha = 1.0;
+ctx.strokeStyle = "#ffffff";
+ctx.strokeRect(obj.x, obj.y, obj.w, obj.h);
+} else if (obj.type === 'FINISH') {
+ctx.fillStyle = "#00ffcc";
+ctx.fillRect(obj.x, obj.y - 100, 20, 300);
+}
+}
+// Render Player Avatar
+ctx.save();
+ctx.translate(player.x + player.width / 2, player.y + player.height / 2);
+ctx.rotate(player.rotation);
+if (player.mode === 'CUBE') {
+ctx.fillStyle = "#00ffff";
+ctx.strokeStyle = "#ffffff";
+ctx.lineWidth = 3;
+ctx.fillRect(-player.width / 2, -player.height / 2, player.width, player.height);
+ctx.strokeRect(-player.width / 2, -player.height / 2, player.width, player.height);
+ctx.fillStyle = "#ffffff";
+ctx.fillRect(4, -10, 8, 8);
+ctx.fillRect(4, 2, 8, 8);
+} else if (player.mode === 'SHIP') {
+ctx.fillStyle = "#ffcc00";
+ctx.beginPath();
+ctx.moveTo(-player.width/2, -player.height/4);
+ctx.lineTo(player.width/2, 0);
+ctx.lineTo(-player.width/2, player.height/2);
+ctx.closePath();
+ctx.fill();
+ctx.strokeStyle = "#fff";
+ctx.stroke();
+} else if (player.mode === 'BALL') {
+ctx.beginPath();
+ctx.arc(0, 0, player.width / 2, 0, Math.PI * 2);
+ctx.fillStyle = "#ff3399";
+ctx.fill();
+ctx.strokeStyle = "#ffffff";
+ctx.lineWidth = 2;
+ctx.stroke();
+ctx.beginPath();
+ctx.moveTo(-player.width/2, 0); ctx.lineTo(player.width/2, 0);
+ctx.moveTo(0, -player.height/2); ctx.lineTo(0, player.height/2);
+ctx.stroke();
+}
+ctx.restore();
+ctx.restore();
+}
+// Global Loop Manager
+function mainLoop() {
+update();
+draw();
+game.inputJustPressed = false;
+requestAnimationFrame(mainLoop);
+}
+// Initialize Engine
+resetGame(true);
+mainLoop();
+</script>
+</body>
+</html>
